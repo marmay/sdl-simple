@@ -1,0 +1,7 @@
+cradle:
+  cabal:
+    - path: "sdl-simple"
+      component: "sdlex:lib:sdl-simple"
+
+    - path: "snake/Main.hs"
+      component: "sdlex:exe:snake"
