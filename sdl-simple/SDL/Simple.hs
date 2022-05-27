@@ -9,6 +9,7 @@ module SDL.Simple
   , KeyEvent( .. )
   , SimpleGame( .. )
   , V2( .. )
+  , Pos( .. )
   , drawCircle
   , fillRect
   , fillCircle

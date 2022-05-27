@@ -44,6 +44,7 @@ executable snake
     -- other-extensions:
     build-depends:    base ^>=4.14.3.0
                     , containers
+                    , random
                     , sdl-simple
     hs-source-dirs:   snake
     default-language: Haskell2010
