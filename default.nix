@@ -4,8 +4,8 @@ let
 
   inherit (nixpkgs) pkgs;
 
-  f = { mkDerivation, base, containers, lens, lib, linear, sdl2
-      , sdl2-gfx, text, transformers
+  f = { mkDerivation, base, containers, lens, lib, linear, random
+      , sdl2, sdl2-gfx, split, text, transformers
       }:
       mkDerivation {
         pname = "sdlex";
@@ -16,7 +16,7 @@ let
         libraryHaskellDepends = [
           base containers lens linear sdl2 sdl2-gfx text transformers
         ];
-        executableHaskellDepends = [ base containers ];
+        executableHaskellDepends = [ base containers random split ];
         doHaddock = false;
         license = "unknown";
         hydraPlatforms = lib.platforms.none;

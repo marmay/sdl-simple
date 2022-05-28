@@ -46,5 +46,6 @@ executable snake
                     , containers
                     , random
                     , sdl-simple
+                    , split
     hs-source-dirs:   snake
     default-language: Haskell2010
