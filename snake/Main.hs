@@ -107,11 +107,16 @@ instance SimpleGame SnakeGame where
   tick g t = foldl (\g h -> if t `mod` fst h == 0 then snd h g else g) g handlers
     where handlers = [(rateOf g, step), (600, makeApple t)]
 
-  handleKeyPressed g KeyUp    = g { snakeDirection = V2 0 (-1) }
-  handleKeyPressed g KeyDown  = g { snakeDirection = V2 0 1 }
-  handleKeyPressed g KeyLeft  = g { snakeDirection = V2 (-1) 0 }
-  handleKeyPressed g KeyRight = g { snakeDirection = V2 1 0 }
-  handleKeyPressed g _        = g
+  handleAction g (ActionEvent Player1 action Pressed) =
+    case directionOf action of
+      Just dir -> updateSnakeDirection g dir
+      Nothing  -> g
+    where directionOf ActionUp    = Just $ V2 0 (-1)
+          directionOf ActionDown  = Just $ V2 0 1
+          directionOf ActionLeft  = Just $ V2 (-1) 0
+          directionOf ActionRight = Just $ V2 1 0
+          directionOf _           = Nothing
+  handleAction g _ = g
 
   draw g = do
     forM_ (M.keys $ apples g) $ \cell ->

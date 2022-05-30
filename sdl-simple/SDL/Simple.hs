@@ -4,9 +4,10 @@
 
 module SDL.Simple
   ( Color( .. )
-  , Key( .. )
-  , KeyState( .. )
-  , KeyEvent( .. )
+  , Action( .. )
+  , ActionEvent( .. )
+  , ActionState( .. )
+  , Player( .. )
   , SimpleGame( .. )
   , V2( .. )
   , Pos( .. )
@@ -49,6 +50,7 @@ data Color
   | Red
   | Green
   | Blue
+  | RGB Int Int Int
 
 type SDLColor = SDL.V4 GHC.Word.Word8
 toSDLColor :: Color -> SDLColor
@@ -57,6 +59,7 @@ toSDLColor Black  = SDL.V4   0   0   0 255
 toSDLColor Red    = SDL.V4 255   0   0 255
 toSDLColor Green  = SDL.V4   0 255   0 255
 toSDLColor Blue   = SDL.V4   0   0 255 255
+toSDLColor (RGB r g b) = SDL.V4 (fromIntegral r) (fromIntegral g) (fromIntegral b) 255
 
 withWindow :: MonadIO m => T.Text -> Size -> (SDL.Window -> m a) -> m ()
 withWindow title size op = do
@@ -70,48 +73,49 @@ withWindow title size op = do
 data MainLoopIntent
   = Quit
 
-type KeyMap = M.Map Key Int
+type PlayerActionMap = M.Map PlayerAction Int
 
-translateEvents :: Int -> [SDL.Event] -> Trans.State KeyMap (Either MainLoopIntent [KeyEvent])
-translateEvents tick = updateKeyMap . foldM (\k e -> translateEventPayload k (SDL.eventPayload e)) [] . reverse
+translateEvents :: Int -> [SDL.Event] -> Trans.State PlayerActionMap (Either MainLoopIntent [ActionEvent])
+translateEvents tick = updatePlayerActionMap . foldM (\k e -> translateEventPayload k (SDL.eventPayload e)) [] . reverse
   where
-    updateKeyMap :: Either MainLoopIntent [KeyEvent] -> Trans.State KeyMap (Either MainLoopIntent [KeyEvent])
-    updateKeyMap (Left i) = pure $ Left i
-    updateKeyMap (Right evs) = do
-      keyMap <- Trans.get
-      Trans.put $ foldl updateKeyMap' keyMap evs
-      pure $ Right (evs ++ keyMapEvents keyMap)
-    updateKeyMap' :: KeyMap -> KeyEvent -> KeyMap
-    updateKeyMap' keyMap KeyEvent{ key, state } =
+    updatePlayerActionMap :: Either MainLoopIntent [ActionEvent] -> Trans.State PlayerActionMap (Either MainLoopIntent [ActionEvent])
+    updatePlayerActionMap (Left i) = pure $ Left i
+    updatePlayerActionMap (Right evs) = do
+      playerActionMap <- Trans.get
+      Trans.put $ foldl updatePlayerActionMap' playerActionMap evs
+      pure $ Right (evs ++ playerActionMapEvents playerActionMap)
+    updatePlayerActionMap' :: PlayerActionMap -> ActionEvent -> PlayerActionMap
+    updatePlayerActionMap' playerActionMap ActionEvent{ player, action, state } =
       case state of
-        Pressed   -> M.insert key tick keyMap
-        Released  -> M.delete key keyMap
-        _         -> keyMap
-    keyMapEvents :: KeyMap -> [KeyEvent]
-    keyMapEvents keyMap = map (\(key, sinceTick) -> KeyEvent { key = key, state = Held (tick - sinceTick) }) $ M.toList keyMap
-    translateEventPayload :: [KeyEvent] -> SDL.EventPayload -> Either MainLoopIntent [KeyEvent]
+        Pressed   -> M.insert (PlayerAction player action) tick playerActionMap
+        Released  -> M.delete (PlayerAction player action) playerActionMap
+        _         -> playerActionMap
+    playerActionMapEvents :: PlayerActionMap -> [ActionEvent]
+    playerActionMapEvents playerActionMap = map (\(playerAction, sinceTick) -> ActionEvent { player = player' playerAction, action = action' playerAction, state = Held (tick - sinceTick) }) $ M.toList playerActionMap
+    translateEventPayload :: [ActionEvent] -> SDL.EventPayload -> Either MainLoopIntent [ActionEvent]
     translateEventPayload _ SDL.QuitEvent = Left Quit
     translateEventPayload r (SDL.KeyboardEvent k) = translateKeyboardEvent r k
     translateEventPayload r _ = Right r
-    translateKeyboardEvent :: [KeyEvent] -> SDL.KeyboardEventData -> Either MainLoopIntent [KeyEvent]
+    translateKeyboardEvent :: [ActionEvent] -> SDL.KeyboardEventData -> Either MainLoopIntent [ActionEvent]
     translateKeyboardEvent r (SDL.KeyboardEventData _ motion repeated keysym) =
       if repeated
          then Right r
          else case SDL.keysymKeycode keysym of
-                SDL.KeycodeEscape   -> Left Quit
-                SDL.KeycodeLeft     -> process KeyLeft
-                SDL.KeycodeRight    -> process KeyRight
-                SDL.KeycodeUp       -> process KeyUp
-                SDL.KeycodeDown     -> process KeyDown
-                SDL.KeycodeSpace    -> process KeySpace
+                SDL.KeycodeEscape     -> Left Quit
+                SDL.KeycodeLeft       -> process $ PlayerAction Player1 ActionLeft
+                SDL.KeycodeRight      -> process $ PlayerAction Player1 ActionRight
+                SDL.KeycodeUp         -> process $ PlayerAction Player1 ActionUp
+                SDL.KeycodeDown       -> process $ PlayerAction Player1 ActionDown
+                SDL.KeycodeKPEnter    -> process $ PlayerAction Player1 ActionA
+                SDL.KeycodeBackspace  -> process $ PlayerAction Player1 ActionA
                 _ -> Right r
-      where keyState = toKeyState motion
-            toKeyState SDL.Pressed = Pressed
-            toKeyState SDL.Released = Released
-            process :: Key -> Either MainLoopIntent [KeyEvent]
-            process key = Right $ process' key : r
-            process' :: Key -> KeyEvent
-            process' key = KeyEvent { key = key, state = keyState }
+      where actionState = case motion of
+                         SDL.Pressed -> Pressed
+                         SDL.Released -> Released
+            process :: PlayerAction -> Either MainLoopIntent [ActionEvent]
+            process playerAction = Right $ process' playerAction : r
+            process' :: PlayerAction -> ActionEvent
+            process' playerAction = ActionEvent { player = player' playerAction, action = action' playerAction, state = actionState }
 
 runGame :: SimpleGame g => g -> IO ()
 runGame g =
@@ -122,18 +126,19 @@ runGame g =
     Trans.runStateT (mainLoop g window renderer) initialGameState
 
 data GameState = GameState
-  { keyMap :: KeyMap
+  { playerActionMap :: PlayerActionMap
+  , fullScreen :: Bool
   , tickCount :: Int
   }
 
-initialGameState = GameState { keyMap = M.empty, tickCount = 0 }
+initialGameState = GameState { playerActionMap = M.empty, fullScreen = False, tickCount = 0 }
 
 mainLoop :: SimpleGame g => g -> SDL.Window -> SDL.Renderer -> Trans.StateT GameState IO ()
 mainLoop g window renderer = do
   SDL.rendererDrawColor renderer $= toSDLColor (clearColor g)
   SDL.clear renderer
   gameState <- Trans.get
-  (translatedEvents, newKeyMap) <- flip Trans.runState (keyMap gameState) . translateEvents (tickCount gameState) <$> SDL.pollEvents
+  (translatedEvents, newKeyMap) <- flip Trans.runState (playerActionMap gameState) . translateEvents (tickCount gameState) <$> SDL.pollEvents
 
   case translatedEvents of
     Left Quit -> pure ()
@@ -142,7 +147,7 @@ mainLoop g window renderer = do
       liftIO $ Trans.runStateT (draw g') renderer
       SDL.present renderer
       SDL.delay 16
-      Trans.put $ GameState { keyMap = newKeyMap, tickCount = tickCount gameState + 1 }
+      Trans.put $ gameState { playerActionMap = newKeyMap, tickCount = tickCount gameState + 1 }
       mainLoop g' window renderer
 
 type Draw = Trans.StateT SDL.Renderer IO ()
@@ -166,22 +171,35 @@ drawCircle :: Pos -> Int -> Color -> Draw
 drawCircle center radius color = withRenderer $ \renderer -> do
   SDL.circle renderer (toSDLPos center) (fromIntegral radius) (toSDLColor color)
 
-data Key
-  = KeyUp
-  | KeyDown
-  | KeyLeft
-  | KeyRight
-  | KeySpace
+data Player
+  = Player1
+  | Player2
   deriving (Eq, Ord)
 
-data KeyState
+data Action
+  = ActionUp
+  | ActionDown
+  | ActionLeft
+  | ActionRight
+  | ActionA
+  | ActionB
+  deriving (Eq, Ord)
+
+data PlayerAction = PlayerAction
+  { player' :: Player
+  , action' :: Action
+  }
+  deriving (Eq, Ord)
+
+data ActionState
   = Pressed
   | Released
   | Held Int
 
-data KeyEvent = KeyEvent
-  { key :: Key
-  , state :: KeyState
+data ActionEvent = ActionEvent
+  { player :: Player
+  , action :: Action
+  , state :: ActionState
   }
 
 class SimpleGame a where
@@ -192,12 +210,9 @@ class SimpleGame a where
   -- Später kannst du diese Funktion selbst implementieren. Für's erste
   -- genügt es jedoch, wenn du die Funktionen "tick" und/oder "handleKey"
   -- implementierst.
-  update :: a -> Int -> [KeyEvent] -> a
+  update :: a -> Int -> [ActionEvent] -> a
   update g t ev = tick (foldl handleKey g ev) t
-    where handleKey g ev = case state ev of
-                             Pressed  -> handleKeyPressed g (key ev)
-                             Released -> handleKeyReleased g (key ev)
-                             Held ticks -> handleKeyHeld g (key ev) ticks
+    where handleKey g ev = handleAction g ev
 
   -- Macht einen Zeitschritt in deinem Spiel.
   tick :: a -> Int -> a
@@ -205,21 +220,12 @@ class SimpleGame a where
 
   -- Bestimmt, wie sich der Zustand des Spiels ändert, wenn eine Taste
   -- gedrückt wird.
-  handleKeyPressed :: a -> Key -> a
-  handleKeyPressed g _ = g
-
-  -- Bestimmt, wie sich der Zustand des Spiels ändert, wenn eine Taste
-  -- losgelassen wird.
-  handleKeyReleased :: a -> Key -> a
-  handleKeyReleased g _ = g
-
-  -- Bestimmt, wie sich der Zustand des Spiels ändert, wenn eine Taste
-  -- seit einer bestimmten Zeit gedrückt ist.
-  handleKeyHeld :: a -> Key -> Int -> a
-  handleKeyHeld g _ _ = g
+  handleAction :: a -> ActionEvent -> a
+  handleAction g _ = g
 
   -- Diese Funktion zeichnet den aktuellen Zustand des Spiels.
   draw :: a -> Draw
+  draw _ = pure ()
 
   -- windowTitle legt den Namen des Fensters fest.
   windowTitle :: a -> T.Text
