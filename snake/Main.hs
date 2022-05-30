@@ -13,6 +13,7 @@ data SnakeGame = SnakeGame
   , snake          :: [Pos]
   , snakeLength    :: Int
   , snakeDirection :: Pos
+  , nextDirections :: [Pos]
   , apples         :: M.Map Pos Int
   , blockers       :: S.Set Pos
   }
@@ -22,6 +23,7 @@ initialGame = SnakeGame { gridSize = V2 32 24
                         , snake = [V2 15 11]
                         , snakeLength = 3
                         , snakeDirection = V2 1 0
+                        , nextDirections = []
                         , apples = M.empty
                         , blockers = S.fromList $  [V2 x y | x <- [0, 31], y <- [0..9] ++ [14..23]]
                                                 ++ [V2 x y | x <- [1..30], y <- [0, 23]]
@@ -34,7 +36,16 @@ rateOf g = rateOf' (snakeLength g)
 
 -- Whenever the snake moves forward
 step :: SnakeGame -> SnakeGame
-step = die . eat . move
+step = die . eat . move . turn
+
+turn :: SnakeGame -> SnakeGame
+turn g = g{ snakeDirection = newDirection, nextDirections = newNextDirections }
+  where (newDirection, newNextDirections) = turn' (snakeDirection g) (nextDirections g)
+        turn' :: Pos -> [Pos] -> (Pos, [Pos])
+        turn' pos (next:more)
+          | pos + next /= V2 0 0    = (next, more)
+          | otherwise               = turn' pos more
+        turn' pos [] = (pos, [])
 
 move :: SnakeGame -> SnakeGame
 move g = g{ snake = newSnake }
@@ -62,7 +73,11 @@ die g = if isDeadly g (head (snake g)) then initialGame else g
 
 isDeadly :: SnakeGame -> Pos -> Bool
 isDeadly g pos = pos `elem` tail (snake g) ||
-                 pos `S.member` (blockers g)
+                 pos `S.member` blockers g
+
+-- Update direction of snake
+updateSnakeDirection :: SnakeGame -> Pos -> SnakeGame
+updateSnakeDirection g dir = g { nextDirections = take 1 (nextDirections g) ++ [dir] }
 
 -- Generate apples for the snake to eat.
 makeApple :: Int -> SnakeGame -> SnakeGame
