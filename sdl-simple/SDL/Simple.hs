@@ -18,11 +18,13 @@ module SDL.Simple
   ) where
 
 import Control.Lens ((^.))
-import Control.Monad (void, foldM)
+import Control.Monad (void, foldM, forM_)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Control.Monad.Trans.State as Trans
 import qualified SDL
+import qualified SDL.Input.GameController as SDL
 import qualified SDL.Primitive as SDL
+import qualified SDL.Raw.Event as SDLR
 import SDL (($=))
 import Linear.V2
 import qualified Data.Text as T
@@ -63,7 +65,7 @@ toSDLColor (RGB r g b) = SDL.V4 (fromIntegral r) (fromIntegral g) (fromIntegral 
 
 withWindow :: MonadIO m => T.Text -> Size -> (SDL.Window -> m a) -> m ()
 withWindow title size op = do
-  SDL.initialize []
+  SDL.initialize [SDL.InitJoystick, SDL.InitGameController]
   w <- SDL.createWindow title $ SDL.defaultWindow { SDL.windowInitialSize = toSDLPos size }
   SDL.showWindow w
   void $ op w
@@ -92,10 +94,13 @@ translateEvents tick = updatePlayerActionMap . foldM (\k e -> translateEventPayl
         _         -> playerActionMap
     playerActionMapEvents :: PlayerActionMap -> [ActionEvent]
     playerActionMapEvents playerActionMap = map (\(playerAction, sinceTick) -> ActionEvent { player = player' playerAction, action = action' playerAction, state = Held (tick - sinceTick) }) $ M.toList playerActionMap
+
     translateEventPayload :: [ActionEvent] -> SDL.EventPayload -> Either MainLoopIntent [ActionEvent]
     translateEventPayload _ SDL.QuitEvent = Left Quit
     translateEventPayload r (SDL.KeyboardEvent k) = translateKeyboardEvent r k
+    translateEventPayload r (SDL.ControllerButtonEvent ev) = translateControllerButtonEvent r ev
     translateEventPayload r _ = Right r
+
     translateKeyboardEvent :: [ActionEvent] -> SDL.KeyboardEventData -> Either MainLoopIntent [ActionEvent]
     translateKeyboardEvent r (SDL.KeyboardEventData _ motion repeated keysym) =
       if repeated
@@ -117,9 +122,33 @@ translateEvents tick = updatePlayerActionMap . foldM (\k e -> translateEventPayl
             process' :: PlayerAction -> ActionEvent
             process' playerAction = ActionEvent { player = player' playerAction, action = action' playerAction, state = actionState }
 
+    translateControllerButtonEvent r (SDL.ControllerButtonEventData which button state) =
+      case event of
+        Just event' -> Right $ event' : r
+        Nothing     -> Right r
+      where
+        event = do
+          action <- actionOf button
+          state' <- stateOf state
+          pure $ ActionEvent { player = Player1, action = action, state = state'}
+        actionOf SDL.ControllerButtonDpadUp     = Just ActionUp
+        actionOf SDL.ControllerButtonDpadDown   = Just ActionDown
+        actionOf SDL.ControllerButtonDpadLeft   = Just ActionLeft
+        actionOf SDL.ControllerButtonDpadRight  = Just ActionRight
+        actionOf SDL.ControllerButtonA          = Just ActionA
+        actionOf SDL.ControllerButtonB          = Just ActionB
+        actionOf _                              = Nothing
+        stateOf SDL.ControllerButtonPressed     = Just Pressed
+        stateOf SDL.ControllerButtonReleased    = Just Released
+        stateOf _                               = Nothing
+
 runGame :: SimpleGame g => g -> IO ()
 runGame g =
   withWindow (windowTitle g) (windowSize g) $ \window -> do
+    joysticks <- SDL.availableJoysticks
+    forM_ joysticks $ \joystick -> do
+      putStrLn "Initializing joystick."
+      SDLR.gameControllerOpen 0
     renderer <- SDL.createRenderer window (-1) SDL.RendererConfig { rendererType = SDL.AcceleratedRenderer, rendererTargetTexture = False }
     SDL.clear renderer
     SDL.present renderer
