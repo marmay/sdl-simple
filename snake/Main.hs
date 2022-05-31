@@ -119,7 +119,8 @@ randomFreePos maxIt seed g = find (isFree g) $ take maxIt $ randomPositions (mkS
 
 isFree :: SnakeGame -> Pos -> Bool
 isFree g pos = pos `notElem` concatMap snake (players g) &&
-               not (pos `M.member` apples g)
+               not (pos `M.member` apples g) &&
+               not (pos `S.member` blockers g)
 
 randomPositions :: RandomGen g => g -> Pos -> [Pos]
 randomPositions gen rng = map (toRandomPosition rng) (chunksOf 2 $ randoms gen)
