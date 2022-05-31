@@ -30,7 +30,7 @@ initialGame = SnakeGame { gridSize = V2 32 24
                         , players = M.fromList
                           [ ( Player1
                             , PlayerData
-                              { snake = [V2 15 11]
+                              { snake = [V2 16 11]
                               , snakeColor = Cyan
                               , snakeLength = 3
                               , snakeDirection = V2 1 0
@@ -39,7 +39,7 @@ initialGame = SnakeGame { gridSize = V2 32 24
                             )
                           , ( Player2
                             , PlayerData
-                              { snake = [V2 14 11]
+                              { snake = [V2 15 11]
                               , snakeColor = Yellow
                               , snakeLength = 3
                               , snakeDirection = V2 (-1) 0
