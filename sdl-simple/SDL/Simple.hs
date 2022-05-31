@@ -52,15 +52,21 @@ data Color
   | Red
   | Green
   | Blue
+  | Cyan
+  | Magenta
+  | Yellow
   | RGB Int Int Int
 
 type SDLColor = SDL.V4 GHC.Word.Word8
 toSDLColor :: Color -> SDLColor
-toSDLColor White  = SDL.V4 255 255 255 255
-toSDLColor Black  = SDL.V4   0   0   0 255
-toSDLColor Red    = SDL.V4 255   0   0 255
-toSDLColor Green  = SDL.V4   0 255   0 255
-toSDLColor Blue   = SDL.V4   0   0 255 255
+toSDLColor White    = SDL.V4 255 255 255 255
+toSDLColor Black    = SDL.V4   0   0   0 255
+toSDLColor Red      = SDL.V4 255   0   0 255
+toSDLColor Green    = SDL.V4   0 255   0 255
+toSDLColor Blue     = SDL.V4   0   0 255 255
+toSDLColor Cyan     = SDL.V4   0 255 255 255
+toSDLColor Magenta  = SDL.V4 255   0 255 255
+toSDLColor Yellow   = SDL.V4 255 255   0 255
 toSDLColor (RGB r g b) = SDL.V4 (fromIntegral r) (fromIntegral g) (fromIntegral b) 255
 
 withWindow :: MonadIO m => T.Text -> Size -> (SDL.Window -> m a) -> m ()
@@ -113,6 +119,12 @@ translateEvents tick = updatePlayerActionMap . foldM (\k e -> translateEventPayl
                 SDL.KeycodeDown       -> process $ PlayerAction Player1 ActionDown
                 SDL.KeycodeKPEnter    -> process $ PlayerAction Player1 ActionA
                 SDL.KeycodeBackspace  -> process $ PlayerAction Player1 ActionA
+                SDL.KeycodeA          -> process $ PlayerAction Player2 ActionLeft
+                SDL.KeycodeD          -> process $ PlayerAction Player2 ActionRight
+                SDL.KeycodeW          -> process $ PlayerAction Player2 ActionUp
+                SDL.KeycodeS          -> process $ PlayerAction Player2 ActionDown
+                SDL.KeycodeSpace      -> process $ PlayerAction Player2 ActionA
+                SDL.KeycodeComma      -> process $ PlayerAction Player2 ActionA
                 _ -> Right r
       where actionState = case motion of
                          SDL.Pressed -> Pressed

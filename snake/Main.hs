@@ -8,22 +8,43 @@ import Data.Foldable (find)
 import qualified Data.Map as M
 import qualified Data.Set as S
 
-data SnakeGame = SnakeGame
-  { gridSize       :: Pos
-  , snake          :: [Pos]
+data PlayerData = PlayerData
+  { snake          :: [Pos]
+  , snakeColor     :: Color
   , snakeLength    :: Int
   , snakeDirection :: Pos
   , nextDirections :: [Pos]
+  }
+
+data SnakeGame = SnakeGame
+  { gridSize       :: Pos
+  , players        :: M.Map Player PlayerData
   , apples         :: M.Map Pos Int
   , blockers       :: S.Set Pos
   }
 
 initialGame :: SnakeGame
 initialGame = SnakeGame { gridSize = V2 32 24
-                        , snake = [V2 15 11]
-                        , snakeLength = 3
-                        , snakeDirection = V2 1 0
-                        , nextDirections = []
+                        , players = M.fromList
+                          [ ( Player1
+                            , PlayerData
+                              { snake = [V2 15 11]
+                              , snakeColor = Cyan
+                              , snakeLength = 3
+                              , snakeDirection = V2 1 0
+                              , nextDirections = []
+                              }
+                            )
+                          , ( Player2
+                            , PlayerData
+                              { snake = [V2 13 11]
+                              , snakeColor = Yellow
+                              , snakeLength = 3
+                              , snakeDirection = V2 (-1) 0
+                              , nextDirections = []
+                              }
+                            )
+                          ]
                         , apples = M.empty
                         , blockers = S.fromList $  [V2 x y | x <- [0, 31], y <- [0..9] ++ [14..23]]
                                                 ++ [V2 x y | x <- [1..30], y <- [0, 23]]
@@ -31,26 +52,32 @@ initialGame = SnakeGame { gridSize = V2 32 24
                         }
 
 rateOf :: SnakeGame -> Int
-rateOf g = rateOf' (snakeLength g)
-  where rateOf' len = max 1 $ 20 - (len `div` 2)
+rateOf g = 15 -- rateOf' (snakeLength g)
+  -- where rateOf' len = max 1 $ 20 - (len `div` 2)
 
 -- Whenever the snake moves forward
 step :: SnakeGame -> SnakeGame
-step = die . eat . move . turn
+step = die . eat . updatePlayers
 
-turn :: SnakeGame -> SnakeGame
-turn g = g{ snakeDirection = newDirection, nextDirections = newNextDirections }
-  where (newDirection, newNextDirections) = turn' (snakeDirection g) (nextDirections g)
+updatePlayers :: SnakeGame -> SnakeGame
+updatePlayers g = g{ players = M.map (updatePlayer g) (players g) }
+
+updatePlayer :: SnakeGame -> PlayerData -> PlayerData
+updatePlayer g = move g . turn
+
+turn :: PlayerData -> PlayerData
+turn p = p{ snakeDirection = newDirection, nextDirections = newNextDirections }
+  where (newDirection, newNextDirections) = turn' (snakeDirection p) (nextDirections p)
         turn' :: Pos -> [Pos] -> (Pos, [Pos])
         turn' pos (next:more)
           | pos + next /= V2 0 0    = (next, more)
           | otherwise               = turn' pos more
         turn' pos [] = (pos, [])
 
-move :: SnakeGame -> SnakeGame
-move g = g{ snake = newSnake }
-  where newSnake = take (snakeLength g) (newHead : snake g)
-        newHead = wrapToGrid (gridSize g) $ head (snake g) + snakeDirection g
+move :: SnakeGame -> PlayerData -> PlayerData
+move g p = p{ snake = newSnake }
+  where newSnake = take (snakeLength p) (newHead : snake p)
+        newHead = wrapToGrid (gridSize g) $ head (snake p) + snakeDirection p
 
 wrapToGrid :: Pos -> Pos -> Pos
 wrapToGrid (V2 w h) (V2 x y) = V2 (wrap 0 (w - 1) x) (wrap 0 (h - 1) y)
@@ -59,25 +86,27 @@ wrapToGrid (V2 w h) (V2 x y) = V2 (wrap 0 (w - 1) x) (wrap 0 (h - 1) y)
           | val > to      = from
           | otherwise     = val
 
-eat :: SnakeGame -> SnakeGame
-eat g =
-  if M.member snakeHead (apples g)
-  then g{ snakeLength = snakeLength g + 1
-        , apples = M.delete snakeHead (apples g)
-        }
-  else g
-  where snakeHead = head $ snake g
-
 die :: SnakeGame -> SnakeGame
-die g = if isDeadly g (head (snake g)) then initialGame else g
+die g = if any (dies g) (M.keys $ players g) then initialGame else g
 
-isDeadly :: SnakeGame -> Pos -> Bool
-isDeadly g pos = pos `elem` tail (snake g) ||
-                 pos `S.member` blockers g
+dies :: SnakeGame -> Player -> Bool
+dies g p = pos `elem` tail thisSnake ||
+           pos `elem` concat otherSnakes ||
+           pos `S.member` blockers g
+  where
+    (Just thisSnake) = snake <$> M.lookup p (players g)
+    otherSnakes = map (snake . snd) $ filter ((/= p) . fst) $ M.toList $ players g
+    pos = head thisSnake
+
+eat :: SnakeGame -> SnakeGame
+eat g = g{ players = newPlayers, apples = newApples }
+  where
+    newPlayers = M.map (\p -> if M.member (head (snake p)) (apples g) then p { snakeLength = snakeLength p + 1 } else p) (players g)
+    newApples = foldr (M.delete . head . snake . snd) (apples g) (M.toList (players g))
 
 -- Update direction of snake
-updateSnakeDirection :: SnakeGame -> Pos -> SnakeGame
-updateSnakeDirection g dir = g { nextDirections = take 1 (nextDirections g) ++ [dir] }
+updateSnakeDirection :: SnakeGame -> Player -> Pos -> SnakeGame
+updateSnakeDirection g p dir = g { players = M.adjust (\pd -> pd{ nextDirections = take 1 (nextDirections pd) ++ [dir] }) p (players g) }
 
 -- Generate apples for the snake to eat.
 makeApple :: Int -> SnakeGame -> SnakeGame
@@ -89,7 +118,7 @@ randomFreePos :: Int -> Int -> SnakeGame -> Maybe Pos
 randomFreePos maxIt seed g = find (isFree g) $ take maxIt $ randomPositions (mkStdGen seed) (gridSize g)
 
 isFree :: SnakeGame -> Pos -> Bool
-isFree g pos = pos `notElem` snake g &&
+isFree g pos = pos `notElem` concatMap snake (players g) &&
                not (pos `M.member` apples g)
 
 randomPositions :: RandomGen g => g -> Pos -> [Pos]
@@ -107,9 +136,9 @@ instance SimpleGame SnakeGame where
   tick g t = foldl (\g h -> if t `mod` fst h == 0 then snd h g else g) g handlers
     where handlers = [(rateOf g, step), (600, makeApple t)]
 
-  handleAction g (ActionEvent Player1 action Pressed) =
+  handleAction g (ActionEvent p action Pressed) =
     case directionOf action of
-      Just dir -> updateSnakeDirection g dir
+      Just dir -> updateSnakeDirection g p dir
       Nothing  -> g
     where directionOf ActionUp    = Just $ V2 0 (-1)
           directionOf ActionDown  = Just $ V2 0 1
@@ -121,8 +150,9 @@ instance SimpleGame SnakeGame where
   draw g = do
     forM_ (M.keys $ apples g) $ \cell ->
       fillCircle (toScreen cell + V2 (gridCellSize `div` 2) (gridCellSize `div` 2)) (gridCellSize `div` 2) Red
-    forM_ (snake g) $ \cell ->
-      fillRect (toScreen cell) (V2 gridCellSize gridCellSize) Green
+    forM_ (players g) $ \player ->
+      forM_ (snake player) $ \cell ->
+        fillRect (toScreen cell) (V2 gridCellSize gridCellSize) (snakeColor player)
     forM_ (blockers g) $ \cell ->
       fillRect (toScreen cell) (V2 gridCellSize gridCellSize) White
 
