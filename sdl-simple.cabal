@@ -29,6 +29,7 @@ library sdl-simple
                         , linear
                         , sdl2
                         , sdl2-gfx
+                        , sdl2-ttf
                         , text
                         , transformers
     hs-source-dirs:   sdl-simple

@@ -11,7 +11,10 @@ module SDL.Simple
   , SimpleGame( .. )
   , V2( .. )
   , Pos( .. )
+  , PosF( .. )
   , drawCircle
+  , drawText
+  , drawText'
   , fillRect
   , fillCircle
   , runGame
@@ -25,6 +28,8 @@ import qualified SDL
 import qualified SDL.Input.GameController as SDL
 import qualified SDL.Primitive as SDL
 import qualified SDL.Raw.Event as SDLR
+import qualified SDL.Font as SDLT
+import qualified SDL.Vect as SDL
 import SDL (($=))
 import Linear.V2
 import qualified Data.Text as T
@@ -33,6 +38,7 @@ import qualified Foreign.C.Types
 import qualified GHC.Word
 
 type Pos = V2 Int
+type PosF = V2 Float
 type Size = Pos
 
 type SDLPos = SDL.V2 Foreign.C.Types.CInt
@@ -56,6 +62,7 @@ data Color
   | Magenta
   | Yellow
   | RGB Int Int Int
+  deriving (Eq, Ord)
 
 type SDLColor = SDL.V4 GHC.Word.Word8
 toSDLColor :: Color -> SDLColor
@@ -72,9 +79,11 @@ toSDLColor (RGB r g b) = SDL.V4 (fromIntegral r) (fromIntegral g) (fromIntegral 
 withWindow :: MonadIO m => T.Text -> Size -> (SDL.Window -> m a) -> m ()
 withWindow title size op = do
   SDL.initialize [SDL.InitJoystick, SDL.InitGameController]
+  SDLT.initialize
   w <- SDL.createWindow title $ SDL.defaultWindow { SDL.windowInitialSize = toSDLPos size }
   SDL.showWindow w
   void $ op w
+  SDLT.quit
   SDL.destroyWindow w
   SDL.quit
 
@@ -164,7 +173,13 @@ runGame g =
     renderer <- SDL.createRenderer window (-1) SDL.RendererConfig { rendererType = SDL.AcceleratedRenderer, rendererTargetTexture = False }
     SDL.clear renderer
     SDL.present renderer
-    Trans.runStateT (mainLoop g window renderer) initialGameState
+    let drawState = DrawState
+                    { drawTime = tickCount initialGameState
+                    , drawRenderer = renderer
+                    , drawTextCache = M.empty
+                    , drawFontCache = M.empty
+                    }
+    Trans.runStateT (mainLoop g window drawState) initialGameState
 
 data GameState = GameState
   { playerActionMap :: PlayerActionMap
@@ -174,10 +189,10 @@ data GameState = GameState
 
 initialGameState = GameState { playerActionMap = M.empty, fullScreen = False, tickCount = 0 }
 
-mainLoop :: SimpleGame g => g -> SDL.Window -> SDL.Renderer -> Trans.StateT GameState IO ()
-mainLoop g window renderer = do
-  SDL.rendererDrawColor renderer $= toSDLColor (clearColor g)
-  SDL.clear renderer
+mainLoop :: SimpleGame g => g -> SDL.Window -> DrawState -> Trans.StateT GameState IO ()
+mainLoop g window drawState = do
+  SDL.rendererDrawColor (drawRenderer drawState) $= toSDLColor (clearColor g)
+  SDL.clear (drawRenderer drawState)
   gameState <- Trans.get
   (translatedEvents, newKeyMap) <- flip Trans.runState (playerActionMap gameState) . translateEvents (tickCount gameState) <$> SDL.pollEvents
 
@@ -185,32 +200,113 @@ mainLoop g window renderer = do
     Left Quit -> pure ()
     Right keys -> do
       let g' = update g (tickCount gameState) keys
-      liftIO $ Trans.runStateT (draw g') renderer
-      SDL.present renderer
+      drawState' <- liftIO $ Trans.execStateT (draw g') drawState{ drawTime = tickCount gameState }
+      SDL.present (drawRenderer drawState')
       SDL.delay 16
       Trans.put $ gameState { playerActionMap = newKeyMap, tickCount = tickCount gameState + 1 }
-      mainLoop g' window renderer
+      mainLoop g' window drawState'
 
-type Draw = Trans.StateT SDL.Renderer IO ()
+data Font = Font
+  { fontFilePath          :: T.Text
+  , fontPointSize         :: Int
+  } deriving (Eq, Ord)
 
-withRenderer :: (SDL.Renderer -> Draw) -> Draw
+type FontCache = M.Map Font SDLT.Font
+
+data DrawTextParams = DrawTextParams
+  { drawTextText          :: T.Text
+  , drawTextColor         :: Color
+  , drawTextFont          :: Font
+  } deriving (Eq, Ord)
+
+data TextCacheEntry = TextCacheEntry
+  { textCacheTexture      :: SDL.Texture
+  , textCacheLastUse      :: Int
+  }
+
+type TextCache = M.Map DrawTextParams TextCacheEntry
+
+data DrawState = DrawState
+  { drawTime          :: Int
+  , drawRenderer      :: SDL.Renderer
+  , drawTextCache     :: TextCache
+  , drawFontCache     :: FontCache
+  }
+
+type Draw a = Trans.StateT DrawState IO a
+
+createFont :: Font -> IO SDLT.Font
+createFont f = do
+  SDLT.load (T.unpack $ fontFilePath f) (fontPointSize f)
+
+getFont :: Font -> Draw SDLT.Font
+getFont f = do
+  drawState <- Trans.get
+  case M.lookup f (drawFontCache drawState) of
+    (Just font) -> do
+      pure font
+    Nothing -> do
+      font <- liftIO $ createFont f
+      Trans.put drawState { drawFontCache = M.insert f font (drawFontCache drawState) }
+      pure font
+
+createTextTexture :: SDL.Renderer -> DrawTextParams -> Draw SDL.Texture
+createTextTexture renderer text = do
+  font <- getFont (drawTextFont text)
+  surface <- SDLT.solid font (toSDLColor $ drawTextColor text) (drawTextText text)
+  SDL.createTextureFromSurface renderer surface
+
+getTextTexture :: SDL.Renderer -> DrawTextParams -> Draw SDL.Texture
+getTextTexture renderer text = do
+  drawState <- Trans.get
+  case M.lookup text (drawTextCache drawState) of
+    (Just textCacheEntry) -> do
+      Trans.put drawState { drawTextCache = M.insert text textCacheEntry{ textCacheLastUse = drawTime drawState } (drawTextCache drawState) }
+      pure $ textCacheTexture textCacheEntry
+    Nothing -> do
+      texture <- createTextTexture renderer text
+      Trans.put drawState { drawTextCache = M.insert text TextCacheEntry{ textCacheTexture = texture, textCacheLastUse = drawTime drawState } (drawTextCache drawState) }
+      pure texture
+
+withRenderer :: (SDL.Renderer -> Draw a) -> Draw a
 withRenderer fn = do
-  renderer <- Trans.get
-  fn renderer
-  pure ()
+  drawState <- Trans.get
+  fn $ drawRenderer drawState
 
-fillRect :: Pos -> Pos -> Color -> Draw
+fillRect :: Pos -> Pos -> Color -> Draw ()
 fillRect topLeft bottomRight color = withRenderer $ \renderer -> do
   SDL.rendererDrawColor renderer $= toSDLColor color
   SDL.fillRect renderer (Just (SDL.Rectangle (SDL.P $ toSDLPos topLeft) (toSDLPos bottomRight)))
 
-fillCircle :: Pos -> Int -> Color -> Draw
+fillCircle :: Pos -> Int -> Color -> Draw ()
 fillCircle center radius color = withRenderer $ \renderer -> do
   SDL.fillCircle renderer (toSDLPos center) (fromIntegral radius) (toSDLColor color)
 
-drawCircle :: Pos -> Int -> Color -> Draw
+drawCircle :: Pos -> Int -> Color -> Draw ()
 drawCircle center radius color = withRenderer $ \renderer -> do
   SDL.circle renderer (toSDLPos center) (fromIntegral radius) (toSDLColor color)
+
+drawText' :: Pos -> Int -> Color -> T.Text -> Draw ()
+drawText' pos pointSize color text =
+  drawText pos params
+    where params = DrawTextParams
+                    { drawTextText = text
+                    , drawTextColor = color
+                    , drawTextFont = Font{ fontFilePath = "/nix/store/qkj5n6m2ljw81bd69pi1xrard1wiclcv-liberation-fonts-2.1.0/share/fonts/truetype/LiberationMono-Regular.ttf"
+                                         , fontPointSize = 12
+                                         }
+                    }
+
+drawText :: Pos -> DrawTextParams -> Draw ()
+drawText pos text = withRenderer $ \renderer -> do
+  textTexture <- getTextTexture renderer text
+  target <- liftIO $ targetOf textTexture
+  SDL.copy renderer textTexture Nothing (Just target)
+  pure ()
+    where targetOf :: SDL.Texture -> IO (SDL.Rectangle Foreign.C.Types.CInt)
+          targetOf texture = do
+            info <- SDL.queryTexture texture
+            pure $ SDL.Rectangle (SDL.P $ toSDLPos pos) (V2 (SDL.textureWidth info) (SDL.textureHeight info))
 
 data Player
   = Player1
@@ -265,7 +361,7 @@ class SimpleGame a where
   handleAction g _ = g
 
   -- Diese Funktion zeichnet den aktuellen Zustand des Spiels.
-  draw :: a -> Draw
+  draw :: a -> Draw ()
   draw _ = pure ()
 
   -- windowTitle legt den Namen des Fensters fest.
