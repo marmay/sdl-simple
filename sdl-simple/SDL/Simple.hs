@@ -7,6 +7,7 @@ module SDL.Simple
   , Action( .. )
   , ActionEvent( .. )
   , ActionState( .. )
+  , FontStyle( .. )
   , Player( .. )
   , SimpleGame( .. )
   , V2( .. )
@@ -22,7 +23,9 @@ module SDL.Simple
 
 import Control.Lens ((^.))
 import Control.Monad (void, foldM, forM_)
+import Control.Monad.Except (catchError)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import qualified Control.Monad.Trans.Either as Trans
 import qualified Control.Monad.Trans.State as Trans
 import qualified SDL
 import qualified SDL.Input.GameController as SDL
@@ -36,6 +39,8 @@ import qualified Data.Text as T
 import qualified Data.Map as M
 import qualified Foreign.C.Types
 import qualified GHC.Word
+import qualified System.Environment
+import qualified System.Process
 
 type Pos = V2 Int
 type PosF = V2 Float
@@ -51,6 +56,63 @@ y v = v ^. _y
 
 toSDLPos :: Pos -> SDLPos
 toSDLPos (V2 x y) = V2 (fromIntegral x) (fromIntegral y)
+
+verifyFont :: Maybe FilePath -> IO (Maybe FilePath)
+verifyFont (Just path) = verifyFont' path
+verifyFont Nothing     = pure Nothing
+
+verifyFont' :: FilePath -> IO (Maybe FilePath)
+verifyFont' path = do
+  pure $ Just path
+
+fontFromEnvironment :: String -> IO (Maybe String)
+fontFromEnvironment envName =
+  (Just <$> System.Environment.getEnv envName)
+    `catchError` const (pure Nothing)
+    >>= verifyFont
+
+fontFromFcMatch :: String -> IO (Maybe FilePath)
+fontFromFcMatch pattern =
+  (Just <$> System.Process.readProcess "fc-match" ["-f", "%{file}", pattern] "")
+    `catchError` const (pure Nothing)
+    >>= verifyFont
+
+firstFont :: [IO (Maybe FilePath)] -> IO (Maybe FilePath)
+firstFont (f:fs) = do
+  f' <- f
+  case f' of
+    Just p    -> pure $ Just p
+    Nothing   -> firstFont fs
+firstFont [] = pure Nothing
+
+defaultFont :: FontStyle -> IO (Maybe FilePath)
+defaultFont RegularFont = firstFont
+  [ fontFromEnvironment "SDL_SIMPLE_DEFAULT_FONT"
+  , fontFromFcMatch "monospace"
+  ]
+defaultFont BoldFont = firstFont
+  [ fontFromEnvironment "SDL_SIMPLE_DEFAULT_BOLD_FONT"
+  , fontFromFcMatch "monospace:bold"
+  , defaultFont RegularFont
+  ]
+defaultFont ItalicFont = firstFont
+  [ fontFromEnvironment "SDL_SIMPLE_DEFAULT_ITALIC_FONT"
+  , fontFromFcMatch "monospace:italic"
+  , defaultFont RegularFont
+  ]
+defaultFont BoldItalicFont = firstFont
+  [ fontFromEnvironment "SDL_SIMPLE_DEFAULT_BOLD_ITALIC_FONT"
+  , fontFromFcMatch "monospace:bold:italic"
+  , defaultFont RegularFont
+  ]
+
+defaultFontMap :: IO (M.Map FontStyle FilePath)
+defaultFontMap = do
+  let styles = [RegularFont, BoldFont, ItalicFont, BoldItalicFont]
+  fonts <- mapM defaultFont styles
+  case sequence fonts of
+    (Just fonts) -> pure $ M.fromList $ styles `zip` fonts
+    Nothing      -> error "Could not find all required default fonts! Please use the environment variable 'SDL_SIMPLE_DEFAULT_FONT' to provide one, as detection using fc-match does not seem to work."
 
 data Color
   = White
@@ -173,11 +235,13 @@ runGame g =
     renderer <- SDL.createRenderer window (-1) SDL.RendererConfig { rendererType = SDL.AcceleratedRenderer, rendererTargetTexture = False }
     SDL.clear renderer
     SDL.present renderer
+    drawDefaultFonts <- defaultFontMap
     let drawState = DrawState
                     { drawTime = tickCount initialGameState
                     , drawRenderer = renderer
                     , drawTextCache = M.empty
                     , drawFontCache = M.empty
+                    , drawDefaultFonts = drawDefaultFonts
                     }
     Trans.runStateT (mainLoop g window drawState) initialGameState
 
@@ -211,6 +275,13 @@ data Font = Font
   , fontPointSize         :: Int
   } deriving (Eq, Ord)
 
+data FontStyle
+  = RegularFont
+  | BoldFont
+  | ItalicFont
+  | BoldItalicFont
+  deriving (Eq, Ord)
+
 type FontCache = M.Map Font SDLT.Font
 
 data DrawTextParams = DrawTextParams
@@ -231,6 +302,7 @@ data DrawState = DrawState
   , drawRenderer      :: SDL.Renderer
   , drawTextCache     :: TextCache
   , drawFontCache     :: FontCache
+  , drawDefaultFonts  :: M.Map FontStyle FilePath
   }
 
 type Draw a = Trans.StateT DrawState IO a
@@ -286,16 +358,23 @@ drawCircle :: Pos -> Int -> Color -> Draw ()
 drawCircle center radius color = withRenderer $ \renderer -> do
   SDL.circle renderer (toSDLPos center) (fromIntegral radius) (toSDLColor color)
 
-drawText' :: Pos -> Int -> Color -> T.Text -> Draw ()
-drawText' pos pointSize color text =
+drawDefaultFont :: FontStyle -> Draw FilePath
+drawDefaultFont style = do
+  drawState <- Trans.get
+  let (Just r) = M.lookup style (drawDefaultFonts drawState)
+  pure r
+
+drawText' :: Pos -> Int -> Color -> FontStyle -> T.Text -> Draw ()
+drawText' pos pointSize color style text = do
+  fontPath <- T.pack <$> drawDefaultFont style
+  let params = DrawTextParams
+               { drawTextText = text
+               , drawTextColor = color
+               , drawTextFont = Font{ fontFilePath = fontPath
+                                    , fontPointSize = 12
+                                    }
+               }
   drawText pos params
-    where params = DrawTextParams
-                    { drawTextText = text
-                    , drawTextColor = color
-                    , drawTextFont = Font{ fontFilePath = "/nix/store/qkj5n6m2ljw81bd69pi1xrard1wiclcv-liberation-fonts-2.1.0/share/fonts/truetype/LiberationMono-Regular.ttf"
-                                         , fontPointSize = 12
-                                         }
-                    }
 
 drawText :: Pos -> DrawTextParams -> Draw ()
 drawText pos text = withRenderer $ \renderer -> do
