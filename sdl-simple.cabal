@@ -1,5 +1,5 @@
 cabal-version:      2.4
-name:               sdlex
+name:               sdl-simple
 version:            0.1.0.0
 
 -- A short (one-line) description of the package.
@@ -20,18 +20,21 @@ maintainer:         markus.mayr@outlook.com
 -- copyright:
 -- category:
 extra-source-files: CHANGELOG.md
+build-type:         Simple
 
-library sdl-simple
-    exposed-modules:    SDL.Simple
-    build-depends:      base ^>=4.14.3.0
-                        , containers
-                        , lens
-                        , linear
-                        , sdl2
-                        , sdl2-gfx
-                        , sdl2-ttf
-                        , text
-                        , transformers
+library
+    exposed-modules:  SDL.Simple
+    build-depends:    base ^>=4.14.3.0
+                    , containers
+                    , lens
+                    , linear
+                    , mtl
+                    , process
+                    , sdl2
+                    , sdl2-gfx
+                    , sdl2-ttf
+                    , text
+                    , transformers
     hs-source-dirs:   sdl-simple
     default-language: Haskell2010
 
